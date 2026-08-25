@@ -1,0 +1,62 @@
+name: Search official Inmetro repository
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/search-inmetro-repository.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  search:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Search official repository endpoints
+        shell: bash
+        run: |
+          set -u
+          python - <<'PY'
+          import requests, re, json
+          from urllib.parse import quote
+          s=requests.Session(); s.headers['User-Agent']='Mozilla/5.0'
+          urls=[
+            'https://repositorio.inmetro.gov.br/xmlui/',
+            'https://repositorio.inmetro.gov.br/xmlui/discover?query='+quote('NIT-Semep-021'),
+            'https://repositorio.inmetro.gov.br/xmlui/simple-search?query='+quote('NIT-Semep-021'),
+            'https://repositorio.inmetro.gov.br/rest/search?query='+quote('NIT-Semep-021'),
+            'https://repositorio.inmetro.gov.br/server/api/discover/search/objects?query='+quote('NIT-Semep-021'),
+            'https://repositorio.inmetro.gov.br/xmlui/discover?query='+quote('pescados glaciados'),
+          ]
+          out=[]
+          for url in urls:
+            try:
+              r=s.get(url,timeout=45,allow_redirects=True,verify=False)
+              text=r.text
+              rec={'url':url,'final_url':r.url,'status':r.status_code,'content_type':r.headers.get('content-type'),'length':len(r.content),'contains_nit':bool(re.search(r'NIT[- ]Semep[- ]0?21',text,re.I)),'contains_pescados':bool(re.search(r'pescados.{0,40}glaciados',text,re.I|re.S)),'sample':text[:1000]}
+              hrefs=re.findall(r'href=["\']([^"\']+)["\']',text,re.I)
+              rec['matching_links']=[h for h in hrefs if re.search(r'(semep|pescad|glaciad|bitstream|handle)',h,re.I)][:100]
+              out.append(rec)
+              print('\n###',url,'=>',r.status_code,r.url,len(r.content),r.headers.get('content-type'))
+              print('contains_nit=',rec['contains_nit'],'contains_pescados=',rec['contains_pescados'])
+              for h in rec['matching_links'][:20]: print('LINK',h)
+              print(text[:500].replace('\n',' '))
+            except Exception as e:
+              out.append({'url':url,'error':repr(e)})
+              print('\n###',url,'ERROR',repr(e))
+          open('inmetro_repo_search.json','w',encoding='utf-8').write(json.dumps(out,ensure_ascii=False,indent=2))
+          PY
+      - name: Upload search log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: inmetro-repository-search
+          path: inmetro_repo_search.json
+          if-no-files-found: warn
+          retention-days: 3
