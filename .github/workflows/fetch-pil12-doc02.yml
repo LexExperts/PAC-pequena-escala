@@ -1,0 +1,77 @@
+name: Fetch PIL12 DOC02 official DOU pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/fetch-pil12-doc02.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install PDF tools
+        run: python -m pip install requests pymupdf
+      - name: Fetch official DOU pages 1-12 and extract text
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p pages
+          python - <<'PY'
+          import json, pathlib, re, requests, time, fitz
+          from urllib.parse import urlencode
+          requests.packages.urllib3.disable_warnings()
+          session=requests.Session(); session.headers.update({'User-Agent':'Mozilla/5.0'})
+          rows=[]
+          base='https://pesquisa.in.gov.br/imprensa/servlet/INPDFViewer'
+          for page in range(1,13):
+              params={'captchafield':'firstAccess','data':'30/06/2021','jornal':'515','pagina':str(page)}
+              url=base+'?'+urlencode(params)
+              out=pathlib.Path('pages')/f'dou_2021-06-30_s1_p{page:03d}.pdf'
+              rec={'page':page,'url':url}
+              try:
+                  r=session.get(url,timeout=45,verify=False,allow_redirects=True)
+                  rec.update({'status':r.status_code,'content_type':r.headers.get('content-type'),'bytes':len(r.content),'final_url':r.url})
+                  if r.status_code==200 and r.content[:4]==b'%PDF':
+                      out.write_bytes(r.content)
+                      doc=fitz.open(stream=r.content,filetype='pdf')
+                      text='\n'.join(p.get_text() for p in doc)
+                      norm=re.sub(r'\s+',' ',text).upper()
+                      rec.update({'pdf_pages':doc.page_count,'text_chars':len(text),'text':text,
+                        'contains_265':bool(re.search(r'PORTARIA\s+SAP/MAPA\s+N.{0,8}265',norm,re.S)),
+                        'contains_title':('PESCADOR E PESCADORA PROFISSIONAL' in norm and 'REGISTRO GERAL DA ATIVIDADE PESQUEIRA' in norm),
+                        'contains_signature':('JORGE SEIF JÚNIOR' in norm or 'JORGE SEIF JUNIOR' in norm),
+                        'contains_anexo_i':bool(re.search(r'ANEXO\s+I\b',norm)),
+                        'contains_anexo_v':bool(re.search(r'ANEXO\s+V\b',norm)),
+                      })
+                  else: rec['error']='not_pdf'
+              except Exception as e: rec['error']=repr(e)
+              rows.append(rec)
+              print(f"PAGE {page} status={rec.get('status')} bytes={rec.get('bytes')} chars={rec.get('text_chars')} p265={rec.get('contains_265')} title={rec.get('contains_title')} sign={rec.get('contains_signature')} AI={rec.get('contains_anexo_i')} AV={rec.get('contains_anexo_v')}")
+              if rec.get('text'):
+                  print(re.sub(r'\s+',' ',rec['text']).strip()[:800])
+              time.sleep(0.2)
+          pathlib.Path('page_index.json').write_text(json.dumps(rows,ensure_ascii=False,indent=2),encoding='utf-8')
+          with open('page_index.txt','w',encoding='utf-8') as f:
+              for rec in rows:
+                  f.write(f"\n===== DOU PAGE {rec['page']} =====\nURL: {rec['url']}\nSTATUS: {rec.get('status')} BYTES: {rec.get('bytes')} TEXT_CHARS: {rec.get('text_chars')} P265: {rec.get('contains_265')} TITLE: {rec.get('contains_title')} SIGN: {rec.get('contains_signature')} AI: {rec.get('contains_anexo_i')} AV: {rec.get('contains_anexo_v')}\n")
+                  f.write(rec.get('text',''))
+          PY
+      - name: Upload pages and index
+        uses: actions/upload-artifact@v4
+        with:
+          name: pil12-doc02-dou-pages
+          path: |
+            pages/
+            page_index.json
+            page_index.txt
+          if-no-files-found: error
+          retention-days: 3
