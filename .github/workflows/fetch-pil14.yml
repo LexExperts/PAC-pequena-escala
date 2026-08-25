@@ -13,21 +13,43 @@ permissions:
 jobs:
   fetch:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
       - name: Install validator
-        run: python -m pip install pymupdf
-      - name: Download official NIT-Semep-021 revision 01
+        run: python -m pip install pymupdf requests
+      - name: Diagnose official endpoints and download
         shell: bash
         run: |
-          set -euxo pipefail
-          URL='https://www.inmetro.gov.br/sidoq/Arquivos/SEMEP/NIT/NIT-Semep-21_01.pdf'
-          curl -k -fL --retry 4 --retry-all-errors --connect-timeout 20 --max-time 240 -A 'Mozilla/5.0' -o PIL14-DOC01.pdf "$URL"
-          test "$(head -c 4 PIL14-DOC01.pdf)" = '%PDF'
+          set -u
+          echo 'DNS:'
+          getent ahosts www.inmetro.gov.br || true
+          getent ahosts inmetro.gov.br || true
+          dig +short A www.inmetro.gov.br || true
+          dig +short AAAA www.inmetro.gov.br || true
+          candidates=(
+            'http://www.inmetro.gov.br/sidoq/Arquivos/SEMEP/NIT/NIT-Semep-21_01.pdf'
+            'https://www.inmetro.gov.br/sidoq/Arquivos/SEMEP/NIT/NIT-Semep-21_01.pdf'
+            'http://inmetro.gov.br/sidoq/Arquivos/SEMEP/NIT/NIT-Semep-21_01.pdf'
+            'https://inmetro.gov.br/sidoq/Arquivos/SEMEP/NIT/NIT-Semep-21_01.pdf'
+          )
+          : > attempts.log
+          rm -f PIL14-DOC01.pdf
+          for URL in "${candidates[@]}"; do
+            echo "TRY $URL" | tee -a attempts.log
+            curl -k -fL --retry 1 --retry-all-errors --connect-timeout 15 --max-time 90 -A 'Mozilla/5.0' -o candidate.bin "$URL" 2>&1 | tee -a attempts.log
+            rc=${PIPESTATUS[0]}
+            if [ "$rc" -eq 0 ] && [ "$(head -c 4 candidate.bin 2>/dev/null)" = '%PDF' ]; then
+              mv candidate.bin PIL14-DOC01.pdf
+              printf '%s\n' "$URL" > URL_OFICIAL.txt
+              break
+            fi
+            rm -f candidate.bin
+          done
+          test -f PIL14-DOC01.pdf
       - name: Validate identity and completeness
         shell: bash
         run: |
@@ -50,8 +72,8 @@ jobs:
           print('markers=OK')
           PY
           sha256sum PIL14-DOC01.pdf > PIL14-DOC01.sha256
-          printf '%s\n' 'https://www.inmetro.gov.br/sidoq/Arquivos/SEMEP/NIT/NIT-Semep-21_01.pdf' > URL_OFICIAL.txt
       - name: Upload PIL14 artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: pil14-doc01-official
@@ -59,5 +81,6 @@ jobs:
             PIL14-DOC01.pdf
             PIL14-DOC01.sha256
             URL_OFICIAL.txt
-          if-no-files-found: error
+            attempts.log
+          if-no-files-found: warn
           retention-days: 3
