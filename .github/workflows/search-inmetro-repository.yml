@@ -18,6 +18,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Install HTTP dependency
+        run: python -m pip install requests
       - name: Search official repository endpoints
         shell: bash
         run: |
@@ -25,6 +27,7 @@ jobs:
           python - <<'PY'
           import requests, re, json
           from urllib.parse import quote
+          requests.packages.urllib3.disable_warnings()
           s=requests.Session(); s.headers['User-Agent']='Mozilla/5.0'
           urls=[
             'https://repositorio.inmetro.gov.br/xmlui/',
