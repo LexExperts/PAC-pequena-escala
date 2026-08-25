@@ -1,0 +1,79 @@
+name: Fetch PIL15 DOC03 official DOU pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/fetch-pil15-doc03.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install PDF tools
+        run: python -m pip install requests pymupdf pypdf
+      - name: Fetch official DOU pages 45-90 and extract text
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p pages
+          python - <<'PY'
+          import json, pathlib, re, requests, time, fitz
+          from urllib.parse import urlencode
+          requests.packages.urllib3.disable_warnings()
+          session=requests.Session()
+          session.headers.update({'User-Agent':'Mozilla/5.0'})
+          rows=[]
+          base='https://pesquisa.in.gov.br/imprensa/servlet/INPDFViewer'
+          for page in range(45,91):
+              params={'captchafield':'firstAccess','data':'13/06/2011','jornal':'1','pagina':str(page)}
+              url=base+'?'+urlencode(params)
+              out=pathlib.Path('pages')/f'dou_2011-06-13_s1_p{page:03d}.pdf'
+              rec={'page':page,'url':url}
+              try:
+                  r=session.get(url,timeout=45,verify=False,allow_redirects=True)
+                  rec.update({'status':r.status_code,'content_type':r.headers.get('content-type'),'bytes':len(r.content),'final_url':r.url})
+                  if r.status_code==200 and r.content[:4]==b'%PDF':
+                      out.write_bytes(r.content)
+                      doc=fitz.open(stream=r.content,filetype='pdf')
+                      text='\n'.join(p.get_text() for p in doc)
+                      rec['pdf_pages']=doc.page_count
+                      rec['text_chars']=len(text)
+                      rec['text']=text
+                      rec['contains_ini10']=bool(re.search(r'INSTRU[CÇ][AÃ]O\s+NORMATIVA\s+INTERMINISTERIAL.{0,100}(?:N[º°o\- ]*10|N[º°o\-]*\s*10)',text,re.I|re.S))
+                      rec['contains_anexo_vi']=bool(re.search(r'ANEXO\s+VI',text,re.I))
+                      rec['contains_ministers']=bool(re.search(r'IDELI\s+SALVATTI',text,re.I) and re.search(r'IZABELLA\s+TEIXEIRA',text,re.I))
+                  else:
+                      rec['error']='not_pdf'
+              except Exception as e:
+                  rec['error']=repr(e)
+              rows.append(rec)
+              print(f"PAGE {page} status={rec.get('status')} bytes={rec.get('bytes')} chars={rec.get('text_chars')} ini10={rec.get('contains_ini10')} anexoVI={rec.get('contains_anexo_vi')} ministers={rec.get('contains_ministers')}")
+              if rec.get('text'):
+                  clean=re.sub(r'\s+',' ',rec['text']).strip()
+                  print(clean[:600])
+              time.sleep(0.2)
+          pathlib.Path('page_index.json').write_text(json.dumps(rows,ensure_ascii=False,indent=2),encoding='utf-8')
+          with open('page_index.txt','w',encoding='utf-8') as f:
+              for rec in rows:
+                  f.write(f"\n===== DOU PAGE {rec['page']} =====\nURL: {rec['url']}\nSTATUS: {rec.get('status')} BYTES: {rec.get('bytes')} TEXT_CHARS: {rec.get('text_chars')} INI10: {rec.get('contains_ini10')} ANEXO_VI: {rec.get('contains_anexo_vi')} MINISTERS: {rec.get('contains_ministers')}\n")
+                  f.write(rec.get('text',''))
+          PY
+      - name: Upload pages and index
+        uses: actions/upload-artifact@v4
+        with:
+          name: pil15-doc03-dou-pages
+          path: |
+            pages/
+            page_index.json
+            page_index.txt
+          if-no-files-found: error
+          retention-days: 3
