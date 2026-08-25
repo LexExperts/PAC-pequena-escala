@@ -1,0 +1,63 @@
+name: Fetch PIL14 official PDF
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/fetch-pil14.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install validator
+        run: python -m pip install pymupdf
+      - name: Download official NIT-Semep-021 revision 01
+        shell: bash
+        run: |
+          set -euxo pipefail
+          URL='https://www.inmetro.gov.br/sidoq/Arquivos/SEMEP/NIT/NIT-Semep-21_01.pdf'
+          curl -k -fL --retry 4 --retry-all-errors --connect-timeout 20 --max-time 240 -A 'Mozilla/5.0' -o PIL14-DOC01.pdf "$URL"
+          test "$(head -c 4 PIL14-DOC01.pdf)" = '%PDF'
+      - name: Validate identity and completeness
+        shell: bash
+        run: |
+          python - <<'PY'
+          import hashlib, re, fitz
+          path='PIL14-DOC01.pdf'
+          doc=fitz.open(path)
+          text='\n'.join(page.get_text() for page in doc)
+          norm=re.sub(r'\s+',' ',text).upper()
+          assert doc.page_count == 4, f'Expected 4 pages, got {doc.page_count}'
+          required=['NIT-SEMEP-021','REVISÃO 01','SET/2025','PESCADOS GLACIADOS']
+          missing=[x for x in required if x not in norm]
+          assert not missing, f'Missing markers: {missing}'
+          approval=any(x in norm for x in ['APROVADO POR','APROVAÇÃO','RESPONSABILIDADE'])
+          signature=any(x in norm for x in ['ASSINATURA','APROVADOR','REVISOR','ELABORADOR'])
+          assert approval or signature, 'Approval/signature block not detected'
+          print('pages=',doc.page_count)
+          print('sha256=',hashlib.sha256(open(path,'rb').read()).hexdigest())
+          print('bytes=',len(open(path,'rb').read()))
+          print('markers=OK')
+          PY
+          sha256sum PIL14-DOC01.pdf > PIL14-DOC01.sha256
+          printf '%s\n' 'https://www.inmetro.gov.br/sidoq/Arquivos/SEMEP/NIT/NIT-Semep-21_01.pdf' > URL_OFICIAL.txt
+      - name: Upload PIL14 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pil14-doc01-official
+          path: |
+            PIL14-DOC01.pdf
+            PIL14-DOC01.sha256
+            URL_OFICIAL.txt
+          if-no-files-found: error
+          retention-days: 3
